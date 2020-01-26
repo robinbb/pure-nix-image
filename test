@@ -1,0 +1,5 @@
+#! /bin/sh
+
+set -eu
+
+cat ./image-properties.sh | "$(nix-build -A run)"

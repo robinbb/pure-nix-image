@@ -14,22 +14,23 @@ let
           cacert
           coreutils
           gnutar  # Needed to nix-instantiate expressions with tarballs.
-          gnugrep # TODO: Needed for testing?
           gzip    # Needed to nix-instantiate expressions with tarballs.
-          less    # TODO: not needed? This is the pager.
           nix
-          shadow
         ];
     };
 
   basePkgs = pkgs.path;
 
+  rootHome = "root";  # Do not include the leading '/'.
+
+  systemPath = "run/current-system/sw";  # Do not include the leading '/'.
+
   passwdFile = ''
-    root:x:0:0::/root:${baseEnv}/bin/sh
+    root:x:0:0::/${rootHome}:${systemPath}/bin/sh
     ${builtins.concatStringsSep
         "\n"
         (builtins.genList
-          (i: "nixbld${toString (i+1)}:x:${toString (i+30001)}:30000::/var/empty:/run/current-system/sw/bin/nologin")
+          (i: "nixbld${toString (i+1)}:x:${toString (i+30001)}:30000::/var/empty:/${systemPath}/bin/nologin")
           32
         )
      }
@@ -61,11 +62,12 @@ let
   '';
 
   baseEnvMapping = [
-    "PATH=/run/current-system/sw/bin:/usr/bin:/bin"
-    "MANPATH=/run/current-system/sw/share/man"
-    "NIX_PAGER=less"
+    "HOME=/${rootHome}"
+    "MANPATH=/${systemPath}/share/man"
+    "NIX_PAGER=cat"
+    "NIX_SSL_CERT_FILE=${systemPath}/etc/ssl/certs/ca-bundle.crt"
+    "PATH=/${rootHome}/.nix-profile/bin:/${systemPath}/bin:/usr/bin:/bin"
     "USER=root"
-    "NIX_SSL_CERT_FILE=${baseEnv}/etc/ssl/certs/ca-bundle.crt"
   ];
 
   baseConfig =
@@ -77,18 +79,13 @@ let
   image =
     pkgs.dockerTools.buildImageWithNixDb {
       name = imageName;
-      contents = [ basePkgs baseEnv ];
+      tag = imageTag;
+      contents = [];
       extraCommands = ''
-        set -eu
-
-        # Investigate what is already present in the build environment.
-        whoami
-        pwd
-        ls -laR
 
         # Create system-wide directories.
-        mkdir etc/nix
         mkdir -p bin \
+                 etc/nix \
                  etc/pam.d \
                  usr/bin \
                  var/empty \
@@ -105,17 +102,40 @@ let
 
         echo '${nixConfFile}' > etc/nix/nix.conf
         ln -s ${baseEnv} nix/var/nix/gcroots/booted-system
-        ln -s ${baseEnv} run/current-system/sw
-        ln -s ${baseEnv}/bin/sh bin/sh
-        ln -s ${baseEnv}/bin/env usr/bin/env
+        ln -s ${baseEnv} ${systemPath}
+        ln -s /${systemPath}/bin/sh bin/sh
+        ln -s /${systemPath}/bin/env usr/bin/env
 
         # Configure the root user.
         mkdir -p nix/var/nix/profiles/per-user/root \
-                 root/.nix-defexpr
-        ln -s /nix/var/nix/profiles/per-user/root/profile root/.nix-profile
-        ln -s ${basePkgs} root/.nix-defexpr/nixpkgs
+                 ${rootHome}/.nix-defexpr
+        ln -s /nix/var/nix/profiles/per-user/root/profile \
+              ${rootHome}/.nix-profile
+        ln -s ${basePkgs} \
+              ${rootHome}/.nix-defexpr/nixpkgs
       '';
       config = baseConfig;
     };
+  load =
+    pkgs.writeScript "load-${imageName}" ''
+      #! /bin/sh
+      set -eu
+      if [ -z "$(docker image ls -q ${imageName}:${imageTag})" ]; then
+        echo "Loading ${imageName}:${imageTag}..."
+        docker load < ${image}
+      fi
+    '';
+  run =
+    pkgs.writeScript "run-${imageName}-image" ''
+      #! /bin/sh
+      set -ex
+      ${load}
+      if [ -t 0 ]; then
+        USE_TTY='-t'
+      else
+        USE_TTY=
+      fi
+      docker run --rm -i $USE_TTY ${imageName}:${imageTag} "$@"
+    '';
 in
-  image
+  { inherit image load run; }
