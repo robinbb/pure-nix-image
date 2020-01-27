@@ -1,0 +1,5 @@
+#! /bin/sh
+
+set -eu
+
+exec "$(nix-build -A run)"
